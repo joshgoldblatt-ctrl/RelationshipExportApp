@@ -1,0 +1,749 @@
+<!--
+================================================================================
+  App:          LaGuardia Navigate Relationship Import App
+  Version:      1.0
+  Released:     September 15, 2026
+  Developed by: Josh Goldblatt using Claude
+================================================================================
+  CHANGELOG (most recent first)
+--------------------------------------------------------------------------------
+  v1.0  2026-09-15
+    - Initial release. Companion to the Navigate Check-in Import App: upload a
+      student list, review it, export a Navigate "relationship" import CSV.
+    - Accepts .xlsx, .xls, and .csv uploads. Header matching is flexible
+      (case-insensitive, punctuation/whitespace-insensitive) and recognizes
+      common aliases for the four columns: Student ID, Relationship Type,
+      Staff ID (optional), Action (optional).
+    - Two modes, detected automatically from the uploaded headers:
+        Option 1 - file has only Student ID + Relationship Type: the app shows
+                   an Add/Delete choice and a Staff ID box applied to every row.
+        Option 2 - file also has Staff ID and Action: values are read per row.
+      If only one of Staff ID / Action is present, the app asks for the other.
+    - Action normalization: add/a/assign/new/insert -> add;
+      delete/del/d/remove/rem/unassign/drop/x -> delete. Anything else is
+      flagged as an unrecognized action.
+    - ID padding: numeric Student and Staff IDs shorter than 8 digits are
+      zero-padded to 8 (guards against Excel stripping leading zeros). IDs
+      that are not all digits are flagged.
+    - Validation flags (each in its own review table with remove/restore):
+        Duplicates  - identical Student + Relationship Type + Staff + Action;
+                      first occurrence kept, later ones flagged
+        Problems    - blank Student ID, blank Relationship Type, blank Staff ID,
+                      blank/unrecognized Action, non-numeric ID
+        Warnings    - same Student + Relationship Type + Action but a DIFFERENT
+                      staff member (possible double assignment). Warnings are
+                      informational and are exported unless removed.
+      Relationship Type values are passed through exactly as uploaded (no
+      master list). Duplicate detection normalizes case and whitespace.
+    - Dashboard: stat cards, breakdown by Relationship Type x Action with
+      record and unique-student counts, and staff counts per type.
+    - Export: header line "GradesFirst Import Version=7,Institution ID=13263",
+      then one row per relationship:
+        relationship,<add|delete>,<type>,<staff id>,<student id>,group_id
+      CRLF line endings, no BOM, ASCII-sanitized (smart quotes, dashes,
+      non-breaking and zero-width characters replaced or stripped).
+      Filename: Navigate_Relationship_Import_<Type>_<Action>_<YYYY-MM-DD>.csv;
+      the Type/Action segments become "Mixed" when the export contains more
+      than one value.
+    - Built on the LaGuardia standard design system (standard-design.md).
+================================================================================
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LaGuardia Navigate Relationship Import App — v1.0</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --ink:#22253a;--ink-soft:#565b76;--ink-faint:#8b8fa6;
+  --paper:#f7f4ee;--card:#ffffff;--line:#e4dfd4;
+  --accent:#b5482e;--accent-dark:#9c3c25;--accent-soft:#f3ddd6;
+  --teal:#2e6e72;--teal-soft:#d9e8e8;
+  --gold:#c8922c;--gold-deep:#8a6516;--gold-soft:#f4ecd9;
+  --green:#3f7d57;--green-soft:#dcecdf;
+  --radius:12px;
+  --shadow:0 1px 2px rgba(34,37,58,.06), 0 6px 18px -8px rgba(34,37,58,.12);
+  --font-display:'Fraunces', Georgia, serif;
+  --font-body:'Source Sans 3', 'Segoe UI', sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{font-family:var(--font-body);background:var(--paper);color:var(--ink);font-size:15.5px;line-height:1.55;
+  background-image:radial-gradient(circle at 12% -10%, rgba(181,72,46,.05), transparent 40%),
+                   radial-gradient(circle at 95% 0%, rgba(46,110,114,.05), transparent 35%)}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px 80px}
+
+h1{font-family:var(--font-display);font-weight:700;font-size:clamp(28px,4vw,42px);line-height:1.05;letter-spacing:-.5px}
+h1 .accent{color:var(--accent)}
+h2{font-family:var(--font-display);font-weight:600;font-size:24px;line-height:1.1;letter-spacing:-.2px}
+h3{font-family:var(--font-display);font-weight:600;font-size:18px;line-height:1.15}
+.muted{color:var(--ink-faint)}
+code{font-family:'JetBrains Mono',Menlo,Consolas,monospace;font-size:.92em;background:var(--paper);border:1px solid var(--line);border-radius:4px;padding:0 4px}
+
+header{padding:38px 0 0;margin-bottom:28px}
+.brand-row{display:flex;flex-wrap:wrap;align-items:flex-end;justify-content:space-between;gap:18px;
+  border-bottom:3px solid var(--ink);padding-bottom:22px}
+.subtitle{color:var(--ink-soft);margin-top:9px;max-width:640px;font-size:16px;line-height:1.5}
+.meta-box{font-size:12.5px;color:var(--ink-soft);line-height:1.7;display:grid;grid-template-columns:auto auto;gap:0 10px;align-content:end}
+.meta-box b{color:var(--ink);font-weight:600;text-align:right}
+.meta-box span{white-space:nowrap}
+
+.sec-label{font-family:var(--font-display);font-size:15px;font-weight:600;color:var(--ink-faint);
+  text-transform:uppercase;letter-spacing:.12em;margin:38px 0 14px}
+
+.btn{font-family:var(--font-body);font-size:13px;font-weight:600;line-height:1.2;cursor:pointer;transition:.15s;
+  display:inline-flex;align-items:center;gap:7px;padding:9px 20px;border-radius:999px;border:1.5px solid transparent}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn-primary:hover:not(:disabled){background:var(--accent-dark);border-color:var(--accent-dark)}
+.btn-secondary{background:none;color:var(--accent);border-color:var(--accent)}
+.btn-secondary:hover:not(:disabled){background:var(--accent);color:#fff}
+.btn-neutral{background:none;color:var(--ink-soft);border-color:var(--line)}
+.btn-neutral:hover:not(:disabled){border-color:var(--ink-faint);color:var(--ink)}
+.btn-sm{padding:6px 14px;font-size:12px}
+.row{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+
+.field{margin-bottom:14px;max-width:420px}
+.field label{display:block;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--ink-soft);margin-bottom:4px}
+.field input[type=text],.field input[type=file],.field select{
+  width:100%;font-family:var(--font-body);font-size:14px;padding:8px 11px;
+  border:1.5px solid var(--line);border-radius:8px;background:#fff;color:var(--ink)}
+.field input:focus,.field select:focus{outline:none;border-color:var(--accent)}
+.field .hint{font-size:12px;color:var(--ink-faint);margin-top:4px}
+.radio-row{display:flex;gap:18px;flex-wrap:wrap}
+.radio-row label{display:inline-flex;align-items:center;gap:7px;font-size:14px;font-weight:500;cursor:pointer;text-transform:none;letter-spacing:0;color:var(--ink)}
+.radio-row input{accent-color:var(--accent);width:15px;height:15px}
+
+.badge{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:700;letter-spacing:.03em;
+  padding:3px 10px;border-radius:6px;text-transform:uppercase;white-space:nowrap}
+.badge .dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+.badge.ok{background:var(--green-soft);color:var(--green)}
+.badge.info{background:var(--teal-soft);color:var(--teal)}
+.badge.warn{background:var(--gold-soft);color:var(--gold-deep)}
+.badge.danger{background:var(--accent-soft);color:var(--accent)}
+.badge.muted{background:var(--paper);color:var(--ink-soft);border:1px solid var(--line)}
+
+.table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);background:var(--card)}
+.tbl{width:100%;border-collapse:collapse;font-size:13.5px}
+.tbl thead th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-soft);
+  font-weight:700;padding:10px 14px;border-bottom:2px solid var(--line);background:var(--paper);white-space:nowrap}
+.tbl tbody td{padding:10px 14px;border-bottom:1px solid var(--line);color:var(--ink-soft)}
+.tbl tbody tr:last-child td{border-bottom:none}
+.tbl tbody tr:hover{background:var(--paper)}
+.tbl td.num,.tbl th.num{text-align:right;font-variant-numeric:tabular-nums}
+.tbl td.mono{font-family:'JetBrains Mono',Menlo,Consolas,monospace;font-size:12.5px;font-variant-numeric:tabular-nums}
+.tbl tr.removed td{text-decoration:line-through;color:var(--ink-faint)}
+.tbl input[type=checkbox]{accent-color:var(--accent);width:15px;height:15px}
+.tbl-empty{text-align:center;padding:26px;color:var(--ink-faint);font-style:italic}
+
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:14px;margin-bottom:26px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;box-shadow:var(--shadow);position:relative;overflow:hidden}
+.stat::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--accent)}
+.stat.teal::before{background:var(--teal)}
+.stat.gold::before{background:var(--gold)}
+.stat.ink::before{background:var(--ink)}
+.stat.green::before{background:var(--green)}
+.stat .num{font-family:var(--font-display);font-size:36px;font-weight:700;line-height:1}
+.stat .lbl{font-size:12.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-soft);margin-top:6px;font-weight:600}
+
+.panel{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:24px 26px;margin-bottom:26px}
+.panel h2{font-size:21px;margin-bottom:4px}
+.panel .note{font-size:13px;color:var(--ink-faint);margin-bottom:18px}
+
+.dept-section{margin-bottom:18px}
+.dept-head{display:flex;align-items:center;gap:14px;background:var(--ink);color:#fff;border-radius:var(--radius);
+  padding:13px 20px;cursor:pointer;user-select:none;transition:.15s}
+.dept-head:hover{background:#33375a}
+.dept-head h3{font-size:18px;flex:1;color:#fff}
+.dept-head .counts{font-size:12.5px;opacity:.85;white-space:nowrap}
+.dept-head .chev{transition:transform .2s;font-size:13px}
+.dept-section.open .chev{transform:rotate(90deg)}
+.dept-body{display:none;padding-top:12px}
+.dept-section.open .dept-body{display:block}
+.dept-body .tools{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px}
+.dept-body .tools .info{font-size:13px;color:var(--ink-soft);margin-left:auto}
+
+.alert{border:1px solid var(--line);border-left:4px solid var(--teal);background:var(--card);border-radius:10px;padding:12px 16px;margin:14px 0;font-size:14px;color:var(--ink-soft)}
+.alert.ok{border-left-color:var(--green)}
+.alert.warn{border-left-color:var(--gold)}
+.alert.danger{border-left-color:var(--accent)}
+.alert b{color:var(--ink)}
+
+.mode-card{border:1px solid var(--line);border-left:4px solid var(--teal);border-radius:10px;padding:14px 18px;margin:14px 0 18px;background:var(--paper)}
+.mode-card .dt{color:var(--ink-faint);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em}
+.mode-card .dd{color:var(--ink-soft);font-size:13.5px}
+.mode-card .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:6px 20px;margin-top:8px}
+
+.hidden{display:none!important}
+footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-size:12px;color:var(--ink-faint);text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand-row">
+      <div>
+        <h1>Navigate <span class="accent">Relationship</span> Import App</h1>
+        <p class="subtitle">Upload a student list, review it for duplicates and problems, and export a Navigate relationship import file that assigns or removes advisors, mentors, and other staff relationships.</p>
+      </div>
+      <div class="meta-box">
+        <b>Version:</b><span>1.0</span>
+        <b>Released:</b><span>September 15, 2026</span>
+        <b>Developed by:</b><span>Josh Goldblatt using Claude</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ===================== STEP 1: UPLOAD ===================== -->
+  <section class="panel" id="stepUpload">
+    <h2>Step 1 &mdash; Upload</h2>
+    <p class="note">Accepts .xlsx, .xls, or .csv. Required columns: Student ID and Relationship Type. Optional: Staff ID and Action (add/delete). Extra columns are ignored.</p>
+
+    <div class="field">
+      <label>File</label>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
+    </div>
+
+    <div id="modeCard" class="mode-card hidden"></div>
+    <div id="uploadError" class="alert danger hidden"></div>
+
+    <div id="manualFields" class="hidden">
+      <div class="field" id="actionField">
+        <label>Action (applied to every row)</label>
+        <div class="radio-row">
+          <label><input type="radio" name="manualAction" value="add" checked> Add</label>
+          <label><input type="radio" name="manualAction" value="delete"> Delete</label>
+        </div>
+      </div>
+      <div class="field" id="staffField">
+        <label>Staff ID (applied to every row)</label>
+        <input type="text" id="manualStaffId" placeholder="e.g. 12345678" inputmode="numeric">
+        <div class="hint">Navigate staff ID of the advisor, mentor, or director being assigned or removed.</div>
+      </div>
+    </div>
+
+    <div class="row">
+      <button class="btn btn-primary" id="processBtn" disabled>Process file</button>
+    </div>
+  </section>
+
+  <!-- ===================== STEP 2: DASHBOARD ===================== -->
+  <section id="stepDashboard" class="hidden">
+    <div class="sec-label">Step 2 &mdash; Review</div>
+
+    <div class="stat-grid">
+      <div class="stat green"><div class="num" id="statFinal">0</div><div class="lbl">Rows to export</div></div>
+      <div class="stat ink"><div class="num" id="statTotal">0</div><div class="lbl">Rows uploaded</div></div>
+      <div class="stat teal"><div class="num" id="statStudents">0</div><div class="lbl">Unique students</div></div>
+      <div class="stat gold"><div class="num" id="statDup">0</div><div class="lbl">Duplicates</div></div>
+      <div class="stat"><div class="num" id="statProblem">0</div><div class="lbl">Problems</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Breakdown by relationship type and action</h2>
+      <div class="note">Counts reflect rows currently marked for export.</div>
+      <div class="table-wrap" style="box-shadow:none">
+        <table class="tbl" id="breakdownTable">
+          <thead><tr><th>Relationship type</th><th>Action</th><th class="num">Rows</th><th class="num">Unique students</th><th class="num">Staff members</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="dept-section" id="dupSection">
+      <div class="dept-head" onclick="toggleSection('dupSection')">
+        <span class="chev">&#9654;</span>
+        <h3>Duplicate rows</h3>
+        <span class="counts" id="dupCounts"></span>
+      </div>
+      <div class="dept-body">
+        <div class="alert">Same student, relationship type, staff, and action appearing more than once. The first occurrence is kept; these are the repeats.</div>
+        <div class="tools">
+          <button class="btn btn-primary btn-sm" onclick="removeAll('dup')">Remove all duplicates</button>
+          <button class="btn btn-secondary btn-sm" onclick="removeSelected('dup', true)">Remove selected</button>
+          <button class="btn btn-neutral btn-sm" onclick="removeSelected('dup', false)">Restore selected</button>
+          <span class="info" id="dupInfo"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl" id="dupTable">
+            <thead><tr><th style="width:36px"><input type="checkbox" onchange="selectAll('dupTable', this.checked)"></th><th>Row</th><th>Student ID</th><th>Relationship type</th><th>Staff ID</th><th>Action</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="dept-section" id="probSection">
+      <div class="dept-head" onclick="toggleSection('probSection')">
+        <span class="chev">&#9654;</span>
+        <h3>Problem rows</h3>
+        <span class="counts" id="probCounts"></span>
+      </div>
+      <div class="dept-body">
+        <div class="alert danger">Rows missing a required value or with an unrecognized action or non-numeric ID. These would fail the Navigate import, so they are excluded from the export unless you fix the source file.</div>
+        <div class="tools">
+          <button class="btn btn-primary btn-sm" onclick="removeAll('problem')">Remove all problems</button>
+          <button class="btn btn-secondary btn-sm" onclick="removeSelected('problem', true)">Remove selected</button>
+          <button class="btn btn-neutral btn-sm" onclick="removeSelected('problem', false)">Restore selected</button>
+          <span class="info" id="probInfo"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl" id="probTable">
+            <thead><tr><th style="width:36px"><input type="checkbox" onchange="selectAll('probTable', this.checked)"></th><th>Row</th><th>Student ID</th><th>Relationship type</th><th>Staff ID</th><th>Action</th><th>Issue</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="dept-section" id="warnSection">
+      <div class="dept-head" onclick="toggleSection('warnSection')">
+        <span class="chev">&#9654;</span>
+        <h3>Warnings</h3>
+        <span class="counts" id="warnCounts"></span>
+      </div>
+      <div class="dept-body">
+        <div class="alert warn">Same student and relationship type, same action, but a different staff member. This may be intentional; these rows stay in the export unless you remove them.</div>
+        <div class="tools">
+          <button class="btn btn-secondary btn-sm" onclick="removeSelected('warning', true)">Remove selected</button>
+          <button class="btn btn-neutral btn-sm" onclick="removeSelected('warning', false)">Restore selected</button>
+          <span class="info" id="warnInfo"></span>
+        </div>
+        <div class="table-wrap">
+          <table class="tbl" id="warnTable">
+            <thead><tr><th style="width:36px"><input type="checkbox" onchange="selectAll('warnTable', this.checked)"></th><th>Row</th><th>Student ID</th><th>Relationship type</th><th>Staff ID</th><th>Action</th><th>Also assigned to</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="sec-label">Step 3 &mdash; Export</div>
+    <div class="panel">
+      <div class="row">
+        <button class="btn btn-primary" id="exportBtn">Export CSV</button>
+        <button class="btn btn-neutral" id="resetBtn">Start over</button>
+      </div>
+      <div id="exportInfo" class="alert ok hidden" style="margin-bottom:0"></div>
+    </div>
+  </section>
+
+  <footer>LaGuardia Navigate Relationship Import App &middot; v1.0 &middot; September 15, 2026</footer>
+</div>
+
+<script>
+/* =====================================================================
+   CONSTANTS
+===================================================================== */
+const ID_LENGTH = 8;
+
+const HEADER_ALIASES = {
+  studentId: ['studentid','student','emplid','studentemplid','id','studentnumber','cunyid'],
+  relType:   ['relationshiptype','relationshiptypeid','relationship','role','type','relationshipid'],
+  staffId:   ['staffid','staff','advisorid','mentorid','facultyid','staffemplid','employeeid','staffnumber','advisor','mentor'],
+  action:    ['action','adddelete','addordelete','operation','addremove','addorremove','op','change']
+};
+
+const ACTION_MAP = {
+  add:'add', a:'add', assign:'add', new:'add', insert:'add', create:'add',
+  delete:'delete', del:'delete', d:'delete', remove:'delete', rem:'delete',
+  unassign:'delete', drop:'delete', x:'delete', deactivate:'delete'
+};
+
+/* =====================================================================
+   STATE
+===================================================================== */
+const state = {
+  headerMap: null,
+  rawRows: [],
+  rows: [],          // processed rows
+  mode: null         // {hasStaff, hasAction}
+};
+
+/* =====================================================================
+   DOM
+===================================================================== */
+const $ = (id) => document.getElementById(id);
+const fileInput = $('fileInput');
+const processBtn = $('processBtn');
+
+fileInput.addEventListener('change', async () => {
+  resetDashboard();
+  $('uploadError').classList.add('hidden');
+  $('modeCard').classList.add('hidden');
+  $('manualFields').classList.add('hidden');
+  processBtn.disabled = true;
+  const file = fileInput.files[0];
+  if (!file) return;
+  try {
+    const { headers, rows } = await readFile(file);
+    state.headerMap = mapHeaders(headers);
+    state.rawRows = rows;
+    showModeCard(headers);
+  } catch (err) {
+    console.error(err);
+    showError('Could not read the file: ' + err.message);
+  }
+});
+
+processBtn.addEventListener('click', () => {
+  $('uploadError').classList.add('hidden');
+  const m = state.mode;
+  if (!m.hasStaff) {
+    const sid = $('manualStaffId').value.trim();
+    if (!sid) { showError('Enter a Staff ID to apply to every row.'); return; }
+    if (!/^\d+$/.test(sid)) { showError('Staff ID should be numeric.'); return; }
+  }
+  runProcessing();
+});
+
+$('exportBtn').addEventListener('click', exportCSV);
+$('resetBtn').addEventListener('click', () => {
+  fileInput.value = '';
+  state.headerMap = null; state.rawRows = []; state.rows = []; state.mode = null;
+  $('modeCard').classList.add('hidden');
+  $('manualFields').classList.add('hidden');
+  $('uploadError').classList.add('hidden');
+  processBtn.disabled = true;
+  resetDashboard();
+  $('stepUpload').scrollIntoView({ behavior:'smooth' });
+});
+
+function showError(msg) {
+  const el = $('uploadError');
+  el.textContent = msg;
+  el.classList.remove('hidden');
+}
+
+function resetDashboard() {
+  $('stepDashboard').classList.add('hidden');
+  $('exportInfo').classList.add('hidden');
+}
+
+function toggleSection(id) { $(id).classList.toggle('open'); }
+
+/* =====================================================================
+   FILE READING + HEADER MAPPING
+===================================================================== */
+function readFile(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const wb = XLSX.read(new Uint8Array(e.target.result), { type:'array' });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const aoa = XLSX.utils.sheet_to_json(ws, { header:1, defval:'', raw:false });
+        if (!aoa.length) return resolve({ headers:[], rows:[] });
+        const headers = aoa[0].map(h => String(h == null ? '' : h));
+        const rows = aoa.slice(1).filter(r => r && r.some(v => String(v).trim() !== ''));
+        resolve({ headers, rows });
+      } catch (err) { reject(err); }
+    };
+    reader.onerror = () => reject(new Error('File could not be read.'));
+    reader.readAsArrayBuffer(file);
+  });
+}
+
+function normHeader(s) { return String(s || '').toLowerCase().replace(/[^a-z0-9]/g, ''); }
+
+function mapHeaders(headers) {
+  const norm = headers.map(normHeader);
+  const find = (aliases) => {
+    for (const a of aliases) {
+      const idx = norm.indexOf(a);
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  };
+  const map = {};
+  for (const key of Object.keys(HEADER_ALIASES)) map[key] = find(HEADER_ALIASES[key]);
+  // Guard: "id" alone must not be claimed by staffId via a generic alias, and
+  // studentId must not steal a column already claimed by staffId.
+  if (map.studentId !== -1 && map.studentId === map.staffId) map.staffId = -1;
+  return map;
+}
+
+function showModeCard(headers) {
+  const m = state.headerMap;
+  const missing = [];
+  if (m.studentId === -1) missing.push('Student ID');
+  if (m.relType === -1) missing.push('Relationship Type');
+  if (missing.length) {
+    showError(`Could not find a ${missing.join(' or ')} column. Headers found: ${headers.filter(h => h).map(h => '"' + h + '"').join(', ')}`);
+    return;
+  }
+  state.mode = { hasStaff: m.staffId !== -1, hasAction: m.action !== -1 };
+
+  const label = (idx) => idx === -1 ? '<span class="muted">not in file</span>' : '"' + escapeHtml(headers[idx]) + '"';
+  let modeText;
+  if (state.mode.hasStaff && state.mode.hasAction) modeText = 'Option 2: Staff ID and Action are read from the file, row by row.';
+  else if (!state.mode.hasStaff && !state.mode.hasAction) modeText = 'Option 1: enter the Action and Staff ID below; they apply to every row.';
+  else if (!state.mode.hasStaff) modeText = 'Action is read from the file. Enter the Staff ID below; it applies to every row.';
+  else modeText = 'Staff ID is read from the file. Choose the Action below; it applies to every row.';
+
+  $('modeCard').innerHTML = `
+    <div class="dt">Detected columns &middot; ${state.rawRows.length} data rows</div>
+    <div class="grid">
+      <div><div class="dt">Student ID</div><div class="dd">${label(m.studentId)}</div></div>
+      <div><div class="dt">Relationship type</div><div class="dd">${label(m.relType)}</div></div>
+      <div><div class="dt">Staff ID</div><div class="dd">${label(m.staffId)}</div></div>
+      <div><div class="dt">Action</div><div class="dd">${label(m.action)}</div></div>
+    </div>
+    <div class="dd" style="margin-top:10px"><b>${modeText}</b></div>`;
+  $('modeCard').classList.remove('hidden');
+
+  const needManual = !state.mode.hasStaff || !state.mode.hasAction;
+  $('manualFields').classList.toggle('hidden', !needManual);
+  $('actionField').classList.toggle('hidden', state.mode.hasAction);
+  $('staffField').classList.toggle('hidden', state.mode.hasStaff);
+  processBtn.disabled = false;
+}
+
+/* =====================================================================
+   NORMALIZATION
+===================================================================== */
+function cleanId(v) {
+  // Strip whitespace and a trailing ".0" that SheetJS/Excel sometimes leaves on numeric cells
+  let s = String(v == null ? '' : v).trim().replace(/\.0+$/, '');
+  return s;
+}
+function padId(s) {
+  if (/^\d+$/.test(s) && s.length < ID_LENGTH) return s.padStart(ID_LENGTH, '0');
+  return s;
+}
+function normalizeAction(v) {
+  const k = String(v == null ? '' : v).toLowerCase().replace(/[^a-z]/g, '');
+  return ACTION_MAP[k] || null;
+}
+function normKey(s) { return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim(); }
+
+/* =====================================================================
+   PROCESSING
+===================================================================== */
+function runProcessing() {
+  const m = state.headerMap;
+  const manualAction = document.querySelector('input[name="manualAction"]:checked').value;
+  const manualStaff = padId(cleanId($('manualStaffId').value));
+
+  const rows = state.rawRows.map((r, i) => {
+    const get = (idx) => idx === -1 ? '' : (r[idx] == null ? '' : r[idx]);
+    const studentRaw = cleanId(get(m.studentId));
+    const staffRaw = state.mode.hasStaff ? cleanId(get(m.staffId)) : manualStaff;
+    const actionRaw = state.mode.hasAction ? String(get(m.action)).trim() : manualAction;
+    const relType = String(get(m.relType)).trim();
+
+    const studentId = padId(studentRaw);
+    const staffId = padId(staffRaw);
+    const action = normalizeAction(actionRaw);
+
+    const issues = [];
+    if (!studentId) issues.push('Blank Student ID');
+    else if (!/^\d+$/.test(studentId)) issues.push('Student ID not numeric');
+    if (!relType) issues.push('Blank Relationship Type');
+    if (!staffId) issues.push('Blank Staff ID');
+    else if (!/^\d+$/.test(staffId)) issues.push('Staff ID not numeric');
+    if (!actionRaw) issues.push('Blank Action');
+    else if (!action) issues.push(`Unrecognized Action "${actionRaw}"`);
+
+    return {
+      id: i, rowNum: i + 2,   // +2: header row + 1-based
+      studentId, staffId, relType, action, actionRaw,
+      padded: (studentId !== studentRaw) || (staffId !== staffRaw),
+      issues,
+      isDup: false, warnWith: [],
+      removed: false
+    };
+  });
+
+  // Duplicates: same student + type + staff + action (normalized). First kept.
+  const seen = new Map();
+  for (const r of rows) {
+    if (r.issues.length) continue;
+    const key = [r.studentId, normKey(r.relType), r.staffId, r.action].join('||');
+    if (seen.has(key)) { r.isDup = true; r.removed = true; }
+    else seen.set(key, r.id);
+  }
+
+  // Warnings: same student + type + action, different staff
+  const byStudentType = new Map();
+  for (const r of rows) {
+    if (r.issues.length || r.isDup) continue;
+    const key = [r.studentId, normKey(r.relType), r.action].join('||');
+    if (!byStudentType.has(key)) byStudentType.set(key, []);
+    byStudentType.get(key).push(r);
+  }
+  for (const group of byStudentType.values()) {
+    const staffs = [...new Set(group.map(r => r.staffId))];
+    if (staffs.length > 1) {
+      for (const r of group) r.warnWith = staffs.filter(s => s !== r.staffId);
+    }
+  }
+
+  // Problems and duplicates start out removed; warnings stay in.
+  for (const r of rows) if (r.issues.length) r.removed = true;
+
+  state.rows = rows;
+  renderDashboard();
+  $('stepDashboard').classList.remove('hidden');
+  $('stepDashboard').scrollIntoView({ behavior:'smooth' });
+}
+
+/* =====================================================================
+   DASHBOARD
+===================================================================== */
+function kindRows(kind) {
+  if (kind === 'dup') return state.rows.filter(r => r.isDup);
+  if (kind === 'problem') return state.rows.filter(r => r.issues.length);
+  return state.rows.filter(r => r.warnWith.length);
+}
+
+function renderDashboard() {
+  const rows = state.rows;
+  const final = rows.filter(r => !r.removed);
+  const dups = kindRows('dup'), probs = kindRows('problem'), warns = kindRows('warning');
+
+  $('statFinal').textContent = final.length;
+  $('statTotal').textContent = rows.length;
+  $('statStudents').textContent = new Set(final.map(r => r.studentId)).size;
+  $('statDup').textContent = dups.length;
+  $('statProblem').textContent = probs.length;
+
+  // Breakdown
+  const groups = new Map();
+  for (const r of final) {
+    const key = r.relType + '||' + r.action;
+    if (!groups.has(key)) groups.set(key, { relType:r.relType, action:r.action, rows:0, students:new Set(), staff:new Set() });
+    const g = groups.get(key);
+    g.rows++; g.students.add(r.studentId); g.staff.add(r.staffId);
+  }
+  const tb = $('breakdownTable').querySelector('tbody');
+  tb.innerHTML = '';
+  const list = [...groups.values()].sort((a,b) => a.relType.localeCompare(b.relType) || a.action.localeCompare(b.action));
+  if (!list.length) tb.innerHTML = '<tr><td colspan="5" class="tbl-empty">No rows marked for export.</td></tr>';
+  for (const g of list) {
+    tb.innerHTML += `<tr><td>${escapeHtml(g.relType)}</td><td>${actionBadge(g.action)}</td><td class="num">${g.rows}</td><td class="num">${g.students.size}</td><td class="num">${g.staff.size}</td></tr>`;
+  }
+  const padded = final.filter(r => r.padded).length;
+  if (padded) {
+    tb.innerHTML += `<tr><td colspan="5" class="muted" style="font-size:12.5px">${padded} ID${padded===1?'':'s'} zero-padded to ${ID_LENGTH} digits.</td></tr>`;
+  }
+
+  renderReview('dup', dups, 'dupTable', 'dupCounts', 'dupInfo');
+  renderReview('problem', probs, 'probTable', 'probCounts', 'probInfo');
+  renderReview('warning', warns, 'warnTable', 'warnCounts', 'warnInfo');
+
+  // Auto-open sections that have content
+  $('dupSection').classList.toggle('open', dups.length > 0);
+  $('probSection').classList.toggle('open', probs.length > 0);
+  $('warnSection').classList.toggle('open', warns.length > 0);
+}
+
+function actionBadge(a) {
+  if (a === 'add') return '<span class="badge ok">add</span>';
+  if (a === 'delete') return '<span class="badge danger">delete</span>';
+  return '<span class="badge muted">?</span>';
+}
+
+function renderReview(kind, rows, tableId, countsId, infoId) {
+  const tb = $(tableId).querySelector('tbody');
+  tb.innerHTML = '';
+  const cols = kind === 'dup' ? 6 : 7;
+  $(countsId).textContent = rows.length ? `${rows.length} row${rows.length===1?'':'s'}` : 'none';
+  const removed = rows.filter(r => r.removed).length;
+  $(infoId).textContent = rows.length ? `${removed} of ${rows.length} excluded from export` : '';
+  if (!rows.length) { tb.innerHTML = `<tr><td colspan="${cols}" class="tbl-empty">None.</td></tr>`; return; }
+  for (const r of rows) {
+    let extra = '';
+    if (kind === 'problem') extra = `<td>${r.issues.map(i => `<span class="badge danger">${escapeHtml(i)}</span>`).join(' ')}</td>`;
+    if (kind === 'warning') extra = `<td class="mono">${r.warnWith.map(escapeHtml).join(', ')}</td>`;
+    tb.innerHTML += `<tr class="${r.removed ? 'removed' : ''}">
+      <td><input type="checkbox" data-id="${r.id}"></td>
+      <td class="num">${r.rowNum}</td>
+      <td class="mono">${escapeHtml(r.studentId) || '<span class="muted">blank</span>'}</td>
+      <td>${escapeHtml(r.relType) || '<span class="muted">blank</span>'}</td>
+      <td class="mono">${escapeHtml(r.staffId) || '<span class="muted">blank</span>'}</td>
+      <td>${r.action ? actionBadge(r.action) : escapeHtml(r.actionRaw) || '<span class="muted">blank</span>'}</td>
+      ${extra}</tr>`;
+  }
+}
+
+function selectAll(tableId, checked) {
+  $(tableId).querySelectorAll('tbody input[type=checkbox]').forEach(cb => cb.checked = checked);
+}
+function removeAll(kind) {
+  for (const r of kindRows(kind)) r.removed = true;
+  renderDashboard();
+}
+function removeSelected(kind, removed) {
+  const tableId = kind === 'dup' ? 'dupTable' : kind === 'problem' ? 'probTable' : 'warnTable';
+  const ids = new Set([...$(tableId).querySelectorAll('tbody input[type=checkbox]:checked')].map(cb => cb.dataset.id));
+  for (const r of kindRows(kind)) if (ids.has(String(r.id))) r.removed = removed;
+  renderDashboard();
+}
+
+/* =====================================================================
+   EXPORT
+===================================================================== */
+function exportCSV() {
+  const final = state.rows.filter(r => !r.removed && !r.issues.length);
+  const info = $('exportInfo');
+  if (!final.length) {
+    info.className = 'alert danger'; info.style.marginBottom = '0';
+    info.textContent = 'Nothing to export.';
+    info.classList.remove('hidden');
+    return;
+  }
+
+  const lines = ['GradesFirst Import Version=7,Institution ID=13263'];
+  for (const r of final) {
+    lines.push(['relationship', r.action, sanitize(r.relType), r.staffId, r.studentId, 'group_id'].map(csvField).join(','));
+  }
+  const csv = lines.join('\r\n') + '\r\n';
+
+  const types = [...new Set(final.map(r => r.relType))];
+  const actions = [...new Set(final.map(r => r.action))];
+  const seg = (v) => v.replace(/[^A-Za-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || 'Import';
+  const typeSeg = types.length === 1 ? seg(types[0]) : 'Mixed';
+  const actionSeg = actions.length === 1 ? actions[0] : 'Mixed';
+  const d = new Date();
+  const ymd = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const filename = `Navigate_Relationship_Import_${typeSeg}_${actionSeg}_${ymd}.csv`;
+
+  const blob = new Blob([csv], { type:'text/csv;charset=us-ascii' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+
+  info.className = 'alert ok'; info.style.marginBottom = '0';
+  info.innerHTML = `Exported <b>${escapeHtml(filename)}</b> &middot; ${final.length} row${final.length===1?'':'s'}.`;
+  info.classList.remove('hidden');
+}
+
+function sanitize(s) {
+  return String(s == null ? '' : s)
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/\u00A0/g, ' ')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+    .trim();
+}
+function csvField(s) {
+  s = String(s);
+  return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+function escapeHtml(s) {
+  return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+</script>
+</body>
+</html>
