@@ -1,12 +1,28 @@
 <!--
 ================================================================================
   App:          LaGuardia Navigate Relationship Import App
-  Version:      1.0
-  Released:     September 15, 2026
+  Version:      1.5
+  Released:     September 28, 2026
   Developed by: Josh Goldblatt using Claude
 ================================================================================
   CHANGELOG (most recent first)
 --------------------------------------------------------------------------------
+  v1.5  2026-09-28
+    - Relationship Type column is now optional, like Staff ID and Action.
+      When the upload has no Relationship Type column, a dropdown appears
+      with nine preset Navigate relationship IDs (ASAP_Advisor,
+      Engineering_Advisor, CD_Advisor, Comp_Sci_Advisor, ISS_Advisor,
+      SAS_Advisor, Vet_Advisor, Faculty_Mentor, Peer_Advisor) plus "Other",
+      which reveals a free-text box. The chosen value applies to every row.
+      No default is selected, so processing is blocked until a type is chosen.
+      Custom values are trimmed and ASCII-sanitized but not otherwise changed
+      (no automatic space-to-underscore conversion). When the file does have
+      the column, the dropdown stays hidden and file values are used as before.
+    - Mode card now lists which of Relationship Type / Staff ID / Action come
+      from the file and which are entered manually; Student ID is the only
+      required column.
+    - "Start over" clears the relationship dropdown and custom text box.
+
   v1.0  2026-09-15
     - Initial release. Companion to the Navigate Check-in Import App: upload a
       student list, review it, export a Navigate "relationship" import CSV.
@@ -53,7 +69,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LaGuardia Navigate Relationship Import App — v1.0</title>
+<title>LaGuardia Navigate Relationship Import App — v1.5</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -193,8 +209,8 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
         <p class="subtitle">Upload a student list, review it for duplicates and problems, and export a Navigate relationship import file that assigns or removes advisors, mentors, and other staff relationships.</p>
       </div>
       <div class="meta-box">
-        <b>Version:</b><span>1.0</span>
-        <b>Released:</b><span>September 15, 2026</span>
+        <b>Version:</b><span>1.5</span>
+        <b>Released:</b><span>September 28, 2026</span>
         <b>Developed by:</b><span>Josh Goldblatt using Claude</span>
       </div>
     </div>
@@ -203,7 +219,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
   <!-- ===================== STEP 1: UPLOAD ===================== -->
   <section class="panel" id="stepUpload">
     <h2>Step 1 &mdash; Upload</h2>
-    <p class="note">Accepts .xlsx, .xls, or .csv. Required columns: Student ID and Relationship Type. Optional: Staff ID and Action (add/delete). Extra columns are ignored.</p>
+    <p class="note">Accepts .xlsx, .xls, or .csv. Required column: Student ID. Optional: Relationship Type, Staff ID, and Action (add/delete); anything missing is entered below and applied to every row. Extra columns are ignored.</p>
 
     <div class="field">
       <label>File</label>
@@ -214,6 +230,24 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
     <div id="uploadError" class="alert danger hidden"></div>
 
     <div id="manualFields" class="hidden">
+      <div class="field" id="relTypeField">
+        <label>Relationship type (applied to every row)</label>
+        <select id="manualRelType">
+          <option value="">Choose a relationship type…</option>
+          <option>ASAP_Advisor</option>
+          <option>Engineering_Advisor</option>
+          <option>CD_Advisor</option>
+          <option>Comp_Sci_Advisor</option>
+          <option>ISS_Advisor</option>
+          <option>SAS_Advisor</option>
+          <option>Vet_Advisor</option>
+          <option>Faculty_Mentor</option>
+          <option>Peer_Advisor</option>
+          <option value="__other__">Other (enter below)</option>
+        </select>
+        <input type="text" id="manualRelTypeOther" class="hidden" placeholder="e.g. Honors_Advisor" style="margin-top:8px">
+        <div class="hint">Must match the relationship type ID in Navigate exactly, underscores included.</div>
+      </div>
       <div class="field" id="actionField">
         <label>Action (applied to every row)</label>
         <div class="radio-row">
@@ -334,7 +368,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
     </div>
   </section>
 
-  <footer>LaGuardia Navigate Relationship Import App &middot; v1.0 &middot; September 15, 2026</footer>
+  <footer>LaGuardia Navigate Relationship Import App &middot; v1.5 &middot; September 28, 2026</footer>
 </div>
 
 <script>
@@ -395,6 +429,9 @@ fileInput.addEventListener('change', async () => {
 processBtn.addEventListener('click', () => {
   $('uploadError').classList.add('hidden');
   const m = state.mode;
+  if (!m.hasRelType) {
+    if (!getManualRelType()) { showError('Choose a relationship type, or pick "Other" and enter one.'); return; }
+  }
   if (!m.hasStaff) {
     const sid = $('manualStaffId').value.trim();
     if (!sid) { showError('Enter a Staff ID to apply to every row.'); return; }
@@ -409,11 +446,23 @@ $('resetBtn').addEventListener('click', () => {
   state.headerMap = null; state.rawRows = []; state.rows = []; state.mode = null;
   $('modeCard').classList.add('hidden');
   $('manualFields').classList.add('hidden');
+  $('manualRelType').value = ''; $('manualRelTypeOther').value = ''; $('manualRelTypeOther').classList.add('hidden');
   $('uploadError').classList.add('hidden');
   processBtn.disabled = true;
   resetDashboard();
   $('stepUpload').scrollIntoView({ behavior:'smooth' });
 });
+
+$('manualRelType').addEventListener('change', () => {
+  const other = $('manualRelType').value === '__other__';
+  $('manualRelTypeOther').classList.toggle('hidden', !other);
+  if (other) $('manualRelTypeOther').focus();
+});
+function getManualRelType() {
+  const sel = $('manualRelType').value;
+  if (sel === '__other__') return sanitize($('manualRelTypeOther').value);
+  return sel;
+}
 
 function showError(msg) {
   const el = $('uploadError');
@@ -471,21 +520,21 @@ function mapHeaders(headers) {
 
 function showModeCard(headers) {
   const m = state.headerMap;
-  const missing = [];
-  if (m.studentId === -1) missing.push('Student ID');
-  if (m.relType === -1) missing.push('Relationship Type');
-  if (missing.length) {
-    showError(`Could not find a ${missing.join(' or ')} column. Headers found: ${headers.filter(h => h).map(h => '"' + h + '"').join(', ')}`);
+  if (m.studentId === -1) {
+    showError(`Could not find a Student ID column. Headers found: ${headers.filter(h => h).map(h => '"' + h + '"').join(', ')}`);
     return;
   }
-  state.mode = { hasStaff: m.staffId !== -1, hasAction: m.action !== -1 };
+  state.mode = { hasRelType: m.relType !== -1, hasStaff: m.staffId !== -1, hasAction: m.action !== -1 };
 
   const label = (idx) => idx === -1 ? '<span class="muted">not in file</span>' : '"' + escapeHtml(headers[idx]) + '"';
+  const fromFile = [], manual = [];
+  (state.mode.hasRelType ? fromFile : manual).push('Relationship Type');
+  (state.mode.hasStaff ? fromFile : manual).push('Staff ID');
+  (state.mode.hasAction ? fromFile : manual).push('Action');
   let modeText;
-  if (state.mode.hasStaff && state.mode.hasAction) modeText = 'Option 2: Staff ID and Action are read from the file, row by row.';
-  else if (!state.mode.hasStaff && !state.mode.hasAction) modeText = 'Option 1: enter the Action and Staff ID below; they apply to every row.';
-  else if (!state.mode.hasStaff) modeText = 'Action is read from the file. Enter the Staff ID below; it applies to every row.';
-  else modeText = 'Staff ID is read from the file. Choose the Action below; it applies to every row.';
+  if (!manual.length) modeText = 'Option 2: Relationship Type, Staff ID, and Action are read from the file, row by row.';
+  else if (!fromFile.length) modeText = 'Option 1: enter the Relationship Type, Action, and Staff ID below; they apply to every row.';
+  else modeText = `${fromFile.join(' and ')} read from the file. Enter ${manual.join(' and ')} below; applied to every row.`;
 
   $('modeCard').innerHTML = `
     <div class="dt">Detected columns &middot; ${state.rawRows.length} data rows</div>
@@ -498,8 +547,9 @@ function showModeCard(headers) {
     <div class="dd" style="margin-top:10px"><b>${modeText}</b></div>`;
   $('modeCard').classList.remove('hidden');
 
-  const needManual = !state.mode.hasStaff || !state.mode.hasAction;
+  const needManual = !state.mode.hasRelType || !state.mode.hasStaff || !state.mode.hasAction;
   $('manualFields').classList.toggle('hidden', !needManual);
+  $('relTypeField').classList.toggle('hidden', state.mode.hasRelType);
   $('actionField').classList.toggle('hidden', state.mode.hasAction);
   $('staffField').classList.toggle('hidden', state.mode.hasStaff);
   processBtn.disabled = false;
@@ -530,13 +580,14 @@ function runProcessing() {
   const m = state.headerMap;
   const manualAction = document.querySelector('input[name="manualAction"]:checked').value;
   const manualStaff = padId(cleanId($('manualStaffId').value));
+  const manualRelType = getManualRelType();
 
   const rows = state.rawRows.map((r, i) => {
     const get = (idx) => idx === -1 ? '' : (r[idx] == null ? '' : r[idx]);
     const studentRaw = cleanId(get(m.studentId));
     const staffRaw = state.mode.hasStaff ? cleanId(get(m.staffId)) : manualStaff;
     const actionRaw = state.mode.hasAction ? String(get(m.action)).trim() : manualAction;
-    const relType = String(get(m.relType)).trim();
+    const relType = state.mode.hasRelType ? String(get(m.relType)).trim() : manualRelType;
 
     const studentId = padId(studentRaw);
     const staffId = padId(staffRaw);
