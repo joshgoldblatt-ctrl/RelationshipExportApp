@@ -1,12 +1,30 @@
 <!--
 ================================================================================
   App:          LaGuardia Navigate Relationship Import App
-  Version:      1.5
-  Released:     September 28, 2026
+  Version:      2.0
+  Released:     October 5, 2026
   Developed by: Josh Goldblatt using Claude
 ================================================================================
   CHANGELOG (most recent first)
 --------------------------------------------------------------------------------
+  v2.0  2026-10-05
+    - Column mapping is now user-adjustable. The "Detected columns" card is
+      replaced by a mapping card with one dropdown per field (Student ID,
+      Relationship Type, Staff ID, Action), each listing every header in the
+      uploaded file and pre-selected to the alias-based guess. Prompted by
+      files where the staff column is named "Peer ID", "Advisor ID", etc.
+      Relationship Type, Staff ID, and Action offer "Not in file (enter
+      below)", which reveals the matching manual field; Student ID has no
+      manual fallback, so Process stays disabled until a column is chosen.
+      Changing a dropdown re-evaluates the mode text and manual fields live.
+    - Two fields pointing at the same column is flagged in the mode text and
+      blocks processing until resolved.
+    - A missing Student ID guess no longer shows an error and stops; the
+      mapping card appears with Student ID unselected so it can be chosen.
+    - Added Staff ID aliases: peerid, peeradvisorid, peermentorid,
+      facultymentorid, directorid, programdirectorid, coachid, counselorid,
+      assigneeid.
+
   v1.5  2026-09-28
     - Relationship Type column is now optional, like Staff ID and Action.
       When the upload has no Relationship Type column, a dropdown appears
@@ -69,7 +87,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LaGuardia Navigate Relationship Import App — v1.5</title>
+<title>LaGuardia Navigate Relationship Import App — v2.0</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -209,8 +227,8 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
         <p class="subtitle">Upload a student list, review it for duplicates and problems, and export a Navigate relationship import file that assigns or removes advisors, mentors, and other staff relationships.</p>
       </div>
       <div class="meta-box">
-        <b>Version:</b><span>1.5</span>
-        <b>Released:</b><span>September 28, 2026</span>
+        <b>Version:</b><span>2.0</span>
+        <b>Released:</b><span>October 5, 2026</span>
         <b>Developed by:</b><span>Josh Goldblatt using Claude</span>
       </div>
     </div>
@@ -219,7 +237,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
   <!-- ===================== STEP 1: UPLOAD ===================== -->
   <section class="panel" id="stepUpload">
     <h2>Step 1 &mdash; Upload</h2>
-    <p class="note">Accepts .xlsx, .xls, or .csv. Required column: Student ID. Optional: Relationship Type, Staff ID, and Action (add/delete); anything missing is entered below and applied to every row. Extra columns are ignored.</p>
+    <p class="note">Accepts .xlsx, .xls, or .csv. Required column: Student ID. Optional: Relationship Type, Staff ID, and Action (add/delete); anything missing is entered below and applied to every row. The app guesses which column is which; correct any guess before processing.</p>
 
     <div class="field">
       <label>File</label>
@@ -368,7 +386,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
     </div>
   </section>
 
-  <footer>LaGuardia Navigate Relationship Import App &middot; v1.5 &middot; September 28, 2026</footer>
+  <footer>LaGuardia Navigate Relationship Import App &middot; v2.0 &middot; October 5, 2026</footer>
 </div>
 
 <script>
@@ -380,7 +398,8 @@ const ID_LENGTH = 8;
 const HEADER_ALIASES = {
   studentId: ['studentid','student','emplid','studentemplid','id','studentnumber','cunyid'],
   relType:   ['relationshiptype','relationshiptypeid','relationship','role','type','relationshipid'],
-  staffId:   ['staffid','staff','advisorid','mentorid','facultyid','staffemplid','employeeid','staffnumber','advisor','mentor'],
+  staffId:   ['staffid','staff','advisorid','mentorid','facultyid','staffemplid','employeeid','staffnumber','advisor','mentor',
+              'peerid','peeradvisorid','peermentorid','facultymentorid','directorid','programdirectorid','coachid','counselorid','assigneeid'],
   action:    ['action','adddelete','addordelete','operation','addremove','addorremove','op','change']
 };
 
@@ -394,10 +413,11 @@ const ACTION_MAP = {
    STATE
 ===================================================================== */
 const state = {
-  headerMap: null,
+  headerMap: null,     // {studentId, relType, staffId, action} -> column index or -1
+  headers: [],
   rawRows: [],
   rows: [],          // processed rows
-  mode: null         // {hasStaff, hasAction}
+  mode: null         // {hasRelType, hasStaff, hasAction}
 };
 
 /* =====================================================================
@@ -443,7 +463,7 @@ processBtn.addEventListener('click', () => {
 $('exportBtn').addEventListener('click', exportCSV);
 $('resetBtn').addEventListener('click', () => {
   fileInput.value = '';
-  state.headerMap = null; state.rawRows = []; state.rows = []; state.mode = null;
+  state.headerMap = null; state.headers = []; state.rawRows = []; state.rows = []; state.mode = null;
   $('modeCard').classList.add('hidden');
   $('manualFields').classList.add('hidden');
   $('manualRelType').value = ''; $('manualRelTypeOther').value = ''; $('manualRelTypeOther').classList.add('hidden');
@@ -518,41 +538,79 @@ function mapHeaders(headers) {
   return map;
 }
 
+/* Column-mapping card: one dropdown per field, pre-selected to the alias
+   guess. Changing a dropdown updates state.headerMap and re-evaluates mode. */
+const MAP_FIELDS = [
+  { key:'studentId', label:'Student ID',        manual:false },
+  { key:'relType',   label:'Relationship type', manual:true  },
+  { key:'staffId',   label:'Staff ID',          manual:true  },
+  { key:'action',    label:'Action',            manual:true  }
+];
+
 function showModeCard(headers) {
+  state.headers = headers;
+  const opts = (key, selected, allowManual) => {
+    let html = allowManual
+      ? `<option value="-1"${selected === -1 ? ' selected' : ''}>Not in file (enter below)</option>`
+      : `<option value="-1"${selected === -1 ? ' selected' : ''} disabled>Choose a column…</option>`;
+    headers.forEach((h, i) => {
+      if (!String(h).trim()) return;
+      html += `<option value="${i}"${selected === i ? ' selected' : ''}>${escapeHtml(h)}</option>`;
+    });
+    return html;
+  };
+  $('modeCard').innerHTML = `
+    <div class="dt">Column mapping &middot; ${state.rawRows.length} data rows &middot; adjust any guess that looks wrong</div>
+    <div class="grid" style="gap:10px 20px">
+      ${MAP_FIELDS.map(f => `
+        <div class="field" style="margin:0;max-width:none">
+          <label>${f.label}</label>
+          <select data-map="${f.key}">${opts(f.key, state.headerMap[f.key], f.manual)}</select>
+        </div>`).join('')}
+    </div>
+    <div class="dd" id="modeText" style="margin-top:12px"></div>`;
+  $('modeCard').querySelectorAll('select[data-map]').forEach(sel => {
+    sel.addEventListener('change', () => {
+      state.headerMap[sel.dataset.map] = parseInt(sel.value, 10);
+      applyMapping();
+    });
+  });
+  $('modeCard').classList.remove('hidden');
+  applyMapping();
+}
+
+function applyMapping() {
   const m = state.headerMap;
-  if (m.studentId === -1) {
-    showError(`Could not find a Student ID column. Headers found: ${headers.filter(h => h).map(h => '"' + h + '"').join(', ')}`);
-    return;
+  // Warn if two fields point at the same column
+  const used = {};
+  let clash = null;
+  for (const f of MAP_FIELDS) {
+    if (m[f.key] === -1) continue;
+    if (used[m[f.key]]) clash = `${used[m[f.key]]} and ${f.label} both point at "${state.headers[m[f.key]]}".`;
+    used[m[f.key]] = f.label;
   }
   state.mode = { hasRelType: m.relType !== -1, hasStaff: m.staffId !== -1, hasAction: m.action !== -1 };
 
-  const label = (idx) => idx === -1 ? '<span class="muted">not in file</span>' : '"' + escapeHtml(headers[idx]) + '"';
   const fromFile = [], manual = [];
   (state.mode.hasRelType ? fromFile : manual).push('Relationship Type');
   (state.mode.hasStaff ? fromFile : manual).push('Staff ID');
   (state.mode.hasAction ? fromFile : manual).push('Action');
   let modeText;
-  if (!manual.length) modeText = 'Option 2: Relationship Type, Staff ID, and Action are read from the file, row by row.';
-  else if (!fromFile.length) modeText = 'Option 1: enter the Relationship Type, Action, and Staff ID below; they apply to every row.';
+  if (m.studentId === -1) modeText = 'Choose which column holds the Student ID to continue.';
+  else if (clash) modeText = clash;
+  else if (!manual.length) modeText = 'Relationship Type, Staff ID, and Action are read from the file, row by row.';
+  else if (!fromFile.length) modeText = 'Enter the Relationship Type, Action, and Staff ID below; they apply to every row.';
   else modeText = `${fromFile.join(' and ')} read from the file. Enter ${manual.join(' and ')} below; applied to every row.`;
-
-  $('modeCard').innerHTML = `
-    <div class="dt">Detected columns &middot; ${state.rawRows.length} data rows</div>
-    <div class="grid">
-      <div><div class="dt">Student ID</div><div class="dd">${label(m.studentId)}</div></div>
-      <div><div class="dt">Relationship type</div><div class="dd">${label(m.relType)}</div></div>
-      <div><div class="dt">Staff ID</div><div class="dd">${label(m.staffId)}</div></div>
-      <div><div class="dt">Action</div><div class="dd">${label(m.action)}</div></div>
-    </div>
-    <div class="dd" style="margin-top:10px"><b>${modeText}</b></div>`;
-  $('modeCard').classList.remove('hidden');
+  const mt = $('modeText');
+  mt.innerHTML = `<b>${escapeHtml(modeText)}</b>`;
+  mt.style.color = (m.studentId === -1 || clash) ? 'var(--accent)' : '';
 
   const needManual = !state.mode.hasRelType || !state.mode.hasStaff || !state.mode.hasAction;
   $('manualFields').classList.toggle('hidden', !needManual);
   $('relTypeField').classList.toggle('hidden', state.mode.hasRelType);
   $('actionField').classList.toggle('hidden', state.mode.hasAction);
   $('staffField').classList.toggle('hidden', state.mode.hasStaff);
-  processBtn.disabled = false;
+  processBtn.disabled = (m.studentId === -1) || !!clash;
 }
 
 /* =====================================================================
