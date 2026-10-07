@@ -1,12 +1,25 @@
 <!--
 ================================================================================
   App:          LaGuardia Navigate Relationship Import App
-  Version:      2.0
-  Released:     October 5, 2026
+  Version:      2.1
+  Released:     October 7, 2026
   Developed by: Josh Goldblatt using Claude
 ================================================================================
   CHANGELOG (most recent first)
 --------------------------------------------------------------------------------
+  v2.1  2026-10-07
+    - Added a Navigate Institution ID field in Step 1, pre-filled with 13263
+      (LaGuardia), so the app can be shared with other campuses. The value is
+      written into the export's first line ("Institution ID=<value>"); it does
+      not appear in the filename or dashboard. Must be numeric; Process shows
+      an error otherwise.
+    - The nine preset relationship types in the manual dropdown are grouped
+      under an "LaGuardia relationship types" label; "Other" sits outside the
+      group.
+    - Replaced the Step 1 instructions with Josh's two-paragraph wording
+      describing the full-file and Student-ID-only workflows, followed by one
+      line on accepted formats and correcting column guesses.
+
   v2.0  2026-10-05
     - Column mapping is now user-adjustable. The "Detected columns" card is
       replaced by a mapping card with one dropdown per field (Student ID,
@@ -87,7 +100,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>LaGuardia Navigate Relationship Import App — v2.0</title>
+<title>LaGuardia Navigate Relationship Import App — v2.1</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -227,8 +240,8 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
         <p class="subtitle">Upload a student list, review it for duplicates and problems, and export a Navigate relationship import file that assigns or removes advisors, mentors, and other staff relationships.</p>
       </div>
       <div class="meta-box">
-        <b>Version:</b><span>2.0</span>
-        <b>Released:</b><span>October 5, 2026</span>
+        <b>Version:</b><span>2.1</span>
+        <b>Released:</b><span>October 7, 2026</span>
         <b>Developed by:</b><span>Josh Goldblatt using Claude</span>
       </div>
     </div>
@@ -237,11 +250,19 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
   <!-- ===================== STEP 1: UPLOAD ===================== -->
   <section class="panel" id="stepUpload">
     <h2>Step 1 &mdash; Upload</h2>
-    <p class="note">Accepts .xlsx, .xls, or .csv. Required column: Student ID. Optional: Relationship Type, Staff ID, and Action (add/delete); anything missing is entered below and applied to every row. The app guesses which column is which; correct any guess before processing.</p>
+    <p class="note" style="margin-bottom:10px">Users may upload a list containing Student ID, Staff ID, Relationship Type, Action (add/delete). The app will process and create a Navigate-ready CSV which you can import.</p>
+    <p class="note" style="margin-bottom:10px">Users may also upload a list containing only Student ID and can choose the Staff ID, Relationship Type, and Action to add to the file &mdash; this is helpful if you're only completing one action for one staff member at a time.</p>
+    <p class="note">Accepts .xlsx, .xls, or .csv. The app guesses which column is which; correct any guess before processing.</p>
 
     <div class="field">
       <label>File</label>
       <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
+    </div>
+
+    <div class="field">
+      <label>Navigate Institution ID</label>
+      <input type="text" id="institutionId" value="13263" inputmode="numeric" placeholder="e.g. 13263">
+      <div class="hint">LaGuardia is 13263. Other campuses enter their own Navigate institution ID; it goes in the first line of the export.</div>
     </div>
 
     <div id="modeCard" class="mode-card hidden"></div>
@@ -252,6 +273,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
         <label>Relationship type (applied to every row)</label>
         <select id="manualRelType">
           <option value="">Choose a relationship type…</option>
+          <optgroup label="LaGuardia relationship types">
           <option>ASAP_Advisor</option>
           <option>Engineering_Advisor</option>
           <option>CD_Advisor</option>
@@ -261,6 +283,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
           <option>Vet_Advisor</option>
           <option>Faculty_Mentor</option>
           <option>Peer_Advisor</option>
+          </optgroup>
           <option value="__other__">Other (enter below)</option>
         </select>
         <input type="text" id="manualRelTypeOther" class="hidden" placeholder="e.g. Honors_Advisor" style="margin-top:8px">
@@ -386,7 +409,7 @@ footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);font-si
     </div>
   </section>
 
-  <footer>LaGuardia Navigate Relationship Import App &middot; v2.0 &middot; October 5, 2026</footer>
+  <footer>LaGuardia Navigate Relationship Import App &middot; v2.1 &middot; October 7, 2026</footer>
 </div>
 
 <script>
@@ -446,9 +469,12 @@ fileInput.addEventListener('change', async () => {
   }
 });
 
+function getInstitutionId() { return $('institutionId').value.trim(); }
+
 processBtn.addEventListener('click', () => {
   $('uploadError').classList.add('hidden');
   const m = state.mode;
+  if (!/^\d+$/.test(getInstitutionId())) { showError('Enter a numeric Navigate Institution ID.'); return; }
   if (!m.hasRelType) {
     if (!getManualRelType()) { showError('Choose a relationship type, or pick "Other" and enter one.'); return; }
   }
@@ -809,7 +835,7 @@ function exportCSV() {
     return;
   }
 
-  const lines = ['GradesFirst Import Version=7,Institution ID=13263'];
+  const lines = [`GradesFirst Import Version=7,Institution ID=${getInstitutionId()}`];
   for (const r of final) {
     lines.push(['relationship', r.action, sanitize(r.relType), r.staffId, r.studentId, 'group_id'].map(csvField).join(','));
   }
